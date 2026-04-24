@@ -20,13 +20,13 @@ When you need to audit a skill, follow these steps:
 Use the `shell` tool to run the `audit_skill.py` script. Pass the absolute path to the target skill directory as an argument.
 
 ```bash
-python /home/ubuntu/skills/is-skill-safe/scripts/audit_skill.py <path_to_target_skill>
+python <path_to_this_skill>/scripts/audit_skill.py <path_to_target_skill>
 ```
 
-For example, to audit a skill named `example-skill`:
+For example, to audit a skill named `example-skill` when this skill is located at `/path/to/is-skill-safe`:
 
 ```bash
-python /home/ubuntu/skills/is-skill-safe/scripts/audit_skill.py /home/ubuntu/skills/example-skill
+python /path/to/is-skill-safe/scripts/audit_skill.py /path/to/example-skill
 ```
 
 ### Step 2: Analyze the Output
