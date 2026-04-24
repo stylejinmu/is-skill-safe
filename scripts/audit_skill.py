@@ -11,7 +11,7 @@ Usage:
 import os
 import sys
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Tuple
 
 
@@ -23,65 +23,112 @@ from typing import List, Tuple
 
 PYTHON_PATTERNS: List[Tuple[str, str, str]] = [
     # --- Code Execution Injection ---
-    (r'\beval\s*\(',           "eval() - executes arbitrary string as code",                        "HIGH"),
-    (r'\bexec\s*\(',           "exec() - executes arbitrary Python code block",                     "HIGH"),
-    (r'\bcompile\s*\(',        "compile() - dynamically compiles code objects",                     "HIGH"),
-    (r'\bexecfile\s*\(',       "execfile() - executes arbitrary file as code (Python 2)",           "HIGH"),
-    (r'\b__import__\s*\(',     "__import__() - dynamic import, can bypass static analysis",         "HIGH"),
+    (r'\beval\s*\(',                    "eval() - executes arbitrary string as code",                                   "HIGH"),
+    (r'\bexec\s*\(',                    "exec() - executes arbitrary Python code block",                                "HIGH"),
+    (r'\bcompile\s*\(',                 "compile() - dynamically compiles code objects",                                "HIGH"),
+    (r'\bexecfile\s*\(',                "execfile() - executes arbitrary file as code (Python 2)",                      "HIGH"),
+    (r'\b__import__\s*\(',              "__import__() - dynamic import, can bypass static analysis",                    "HIGH"),
+    (r'\blogging\.config\.listen\s*\(', "logging.config.listen() - receives config via socket and evals it (RCE risk)", "HIGH"),
+    (r'\bcode\.InteractiveConsole\s*\(', "code.InteractiveConsole() - interactive Python interpreter, executes arbitrary code", "HIGH"),
+    (r'\bcode\.InteractiveInterpreter\s*\(', "code.InteractiveInterpreter() - interactive Python interpreter, executes arbitrary code", "HIGH"),
+    (r'\bglobals\s*\(\s*\)',            "globals() - accessing global symbol table dynamically can invoke arbitrary functions", "HIGH"),
+    (r'\blocals\s*\(\s*\)',             "locals() - accessing local symbol table dynamically can invoke arbitrary functions", "MEDIUM"),
 
     # --- System Command Execution ---
-    (r'\bos\.system\s*\(',     "os.system() - executes shell command, command injection risk",      "HIGH"),
-    (r'\bos\.popen\s*\(',      "os.popen() - opens shell pipe, command injection risk",            "HIGH"),
-    (r'\bos\.exec[lv]',        "os.exec*() - replaces current process with new program",           "HIGH"),
-    (r'\bos\.spawn',           "os.spawn*() - spawns subprocess to execute command",               "HIGH"),
-    (r'\bsubprocess\.Popen\s*\(',         "subprocess.Popen() - starts subprocess (risky if shell=True)",  "HIGH"),
-    (r'\bsubprocess\.run\s*\(',           "subprocess.run() - runs subprocess (risky if shell=True)",      "HIGH"),
-    (r'\bsubprocess\.call\s*\(',          "subprocess.call() - calls subprocess (risky if shell=True)",    "HIGH"),
-    (r'\bsubprocess\.check_output\s*\(',  "subprocess.check_output() - captures subprocess output",        "MEDIUM"),
+    (r'\bos\.system\s*\(',             "os.system() - executes shell command, command injection risk",                 "HIGH"),
+    (r'\bos\.popen\s*\(',              "os.popen() - opens shell pipe, command injection risk",                       "HIGH"),
+    (r'\bos\.exec[lv]',                "os.exec*() - replaces current process with new program",                      "HIGH"),
+    (r'\bos\.spawn',                   "os.spawn*() - spawns subprocess to execute command",                          "HIGH"),
+    (r'\bsubprocess\.Popen\s*\(',      "subprocess.Popen() - starts subprocess (risky if shell=True)",                "HIGH"),
+    (r'\bsubprocess\.run\s*\(',        "subprocess.run() - runs subprocess (risky if shell=True)",                    "HIGH"),
+    (r'\bsubprocess\.call\s*\(',       "subprocess.call() - calls subprocess (risky if shell=True)",                  "HIGH"),
+    (r'\bsubprocess\.check_output\s*\(', "subprocess.check_output() - captures subprocess output",                   "MEDIUM"),
 
     # --- Unsafe Deserialization ---
-    (r'\bpickle\.loads?\s*\(',  "pickle.load/loads() - deserializing untrusted data can execute arbitrary code", "HIGH"),
-    (r'\bmarshal\.loads?\s*\(', "marshal.load/loads() - unsafe deserialization of binary data",    "HIGH"),
-    (r'\byaml\.load\s*\(',      "yaml.load() - use yaml.safe_load() instead to avoid code execution", "HIGH"),
-    (r'\bshelve\.open\s*\(',    "shelve.open() - uses pickle internally, same deserialization risk", "MEDIUM"),
+    (r'\bpickle\.loads?\s*\(',         "pickle.load/loads() - deserializing untrusted data can execute arbitrary code", "HIGH"),
+    (r'\bmarshal\.loads?\s*\(',        "marshal.load/loads() - unsafe deserialization of binary data",                "HIGH"),
+    (r'\byaml\.load\s*\(',             "yaml.load() - use yaml.safe_load() instead to avoid code execution",          "HIGH"),
+    (r'\bshelve\.open\s*\(',           "shelve.open() - uses pickle internally, same deserialization risk",           "MEDIUM"),
+
+    # --- Dangerous Imports ---
+    (r'\bimport\s+telnetlib\b',        "import telnetlib - Telnet is insecure (plaintext), use SSH instead",          "HIGH"),
+    (r'\bimport\s+ftplib\b',           "import ftplib - FTP transmits credentials in plaintext, use SFTP/SCP",        "HIGH"),
+    (r'\bimport\s+ctypes\b',           "import ctypes - direct access to low-level OS/Windows APIs, common in malware", "HIGH"),
+    (r'\bimport\s+xmlrpc\b',           "import xmlrpc - XMLRPC is vulnerable to XML injection attacks",               "HIGH"),
+    (r'\bfrom\s+Crypto\b',             "from Crypto - pycrypto is deprecated with known buffer overflow vulnerability", "HIGH"),
+    (r'\bimport\s+dill\b',             "import dill - extends pickle, deserializing untrusted data can execute arbitrary code", "MEDIUM"),
+
+    # --- Unsafe XML Parsing ---
+    (r'xml\.etree\.(c?ElementTree|cElementTree)', "xml.etree - vulnerable to XML Bomb/XXE attacks, use defusedxml instead", "MEDIUM"),
+    (r'xml\.sax\.',                    "xml.sax - vulnerable to XML Bomb/XXE attacks, use defusedxml instead",        "MEDIUM"),
+    (r'xml\.dom\.minidom',             "xml.dom.minidom - vulnerable to XML Bomb/XXE attacks, use defusedxml instead", "MEDIUM"),
+    (r'xml\.dom\.pulldom',             "xml.dom.pulldom - vulnerable to XML Bomb/XXE attacks, use defusedxml instead", "MEDIUM"),
+    (r'lxml\.etree\.(parse|fromstring)', "lxml.etree.parse/fromstring - XXE vulnerable by default, configure explicitly", "MEDIUM"),
 
     # --- File System Operations ---
-    (r'open\s*\(.*?[\'"][wa][\'"]',  "open(..., 'w'/'a') - writes or appends to file",            "MEDIUM"),
-    (r'\bos\.(remove|unlink)\s*\(',  "os.remove/unlink() - deletes a file",                       "MEDIUM"),
-    (r'\bshutil\.rmtree\s*\(',       "shutil.rmtree() - recursively deletes a directory tree",    "HIGH"),
-    (r'\btempfile\.mktemp\s*\(',     "tempfile.mktemp() - insecure temp file creation (race condition)", "MEDIUM"),
+    (r'open\s*\(.*?[\'"][wa][\'"]',    "open(..., 'w'/'a') - writes or appends to file",                             "MEDIUM"),
+    (r'\bos\.(remove|unlink)\s*\(',    "os.remove/unlink() - deletes a file",                                        "MEDIUM"),
+    (r'\bshutil\.rmtree\s*\(',         "shutil.rmtree() - recursively deletes a directory tree",                     "HIGH"),
+    (r'\btempfile\.mktemp\s*\(',       "tempfile.mktemp() - insecure temp file creation (race condition)",            "MEDIUM"),
+    (r'\.extractall\s*\(',             "extractall() - extracting archives without path validation enables Zip Slip", "HIGH"),
 
     # --- Network Requests ---
-    (r'\brequests\.(post|put|delete|patch)\s*\(', "requests.post/put/delete/patch() - state-changing HTTP request", "MEDIUM"),
-    (r'\burllib.*urlopen\s*\(',  "urllib.urlopen() - network request, potential data exfiltration", "MEDIUM"),
-    (r'verify\s*=\s*False',      "verify=False - SSL certificate verification disabled (MITM risk)", "MEDIUM"),
+    (r'\brequests\.(post|put|delete|patch)\s*\(', "requests.post/put/delete/patch() - state-changing HTTP request",  "MEDIUM"),
+    (r'\burllib.*urlopen\s*\(',        "urllib.urlopen() - network request, potential data exfiltration",             "MEDIUM"),
+    (r'verify\s*=\s*False',            "verify=False - SSL certificate verification disabled (MITM risk)",            "MEDIUM"),
+
+    # --- Hardcoded Credentials ---
+    (r'(?i)(password|passwd|secret|api_key|token)\s*=\s*[\'"][^\'"]{4,}[\'"]',
+                                       "Hardcoded credential - password/secret/token/api_key assigned a literal string value", "HIGH"),
+    (r'-----BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE KEY-----',
+                                       "Hardcoded private key - private key material embedded directly in code",      "HIGH"),
+
+    # --- Path Traversal ---
+    (r'os\.path\.join\s*\(.*?(input|request|param|arg)',
+                                       "os.path.join with user input - potential directory traversal vulnerability",  "MEDIUM"),
 
     # --- Weak Cryptography ---
-    (r'\bhashlib\.(md5|sha1)\s*\(', "hashlib.md5/sha1() - weak hash algorithm, insecure for security use", "LOW"),
+    (r'\bhashlib\.(md5|sha1)\s*\(',    "hashlib.md5/sha1() - weak hash algorithm, insecure for security use",        "LOW"),
+    (r'\brandom\.(random|randint|choice|shuffle)\s*\(',
+                                       "random.* - not cryptographically secure, do not use for tokens/keys/passwords", "LOW"),
+    (r'\biv\s*=\s*b?[\'"][^\'"]{8,}[\'"]',
+                                       "Hardcoded IV - fixed initialization vector breaks semantic security of encryption", "MEDIUM"),
 ]
 
 SHELL_PATTERNS: List[Tuple[str, str, str]] = [
     # --- Destructive Commands ---
-    (r'rm\s+-[^\s]*r[^\s]*f|rm\s+-[^\s]*f[^\s]*r', "rm -rf - recursive force delete, unrecoverable",  "HIGH"),
-    (r'>\s*/dev/sd',             ">/dev/sd* - writes directly to raw disk, destroys filesystem",    "HIGH"),
-    (r'mv\s+\S+\s+/dev/null',    "mv ... /dev/null - moves files into void (equivalent to deletion)", "HIGH"),
+    (r'rm\s+-[^\s]*r[^\s]*f|rm\s+-[^\s]*f[^\s]*r',
+                                       "rm -rf - recursive force delete, unrecoverable",                             "HIGH"),
+    (r'>\s*/dev/sd',                   ">/dev/sd* - writes directly to raw disk, destroys filesystem",               "HIGH"),
+    (r'mv\s+\S+\s+/dev/null',          "mv ... /dev/null - moves files into void (equivalent to deletion)",          "HIGH"),
 
     # --- Privilege Escalation ---
-    (r'\bsudo\s+',               "sudo - executes command with superuser privileges",               "HIGH"),
-    (r'\bsu\s+',                 "su - switches to another user account",                           "MEDIUM"),
-    (r'\bchmod\s+(777|a\+w)',    "chmod 777/a+w - sets world-writable permissions",                 "HIGH"),
+    (r'\bsudo\s+',                     "sudo - executes command with superuser privileges",                          "HIGH"),
+    (r'\bsu\s+',                       "su - switches to another user account",                                      "MEDIUM"),
+    (r'\bchmod\s+(777|a\+w)',          "chmod 777/a+w - sets world-writable permissions",                            "HIGH"),
+    (r'\bchmod\s+[uo]?\+s',            "chmod +s - sets SUID/SGID bit, can be used for privilege escalation",       "HIGH"),
+    (r'\bcrontab\s+-',                 "crontab - modifying cron jobs can establish persistent backdoors",            "HIGH"),
+    (r'\biptables\s+',                 "iptables - modifying firewall rules can expose malicious ports",              "HIGH"),
 
     # --- Remote Code Execution ---
-    (r'(wget|curl)[^\n]*\|\s*(ba)?sh', "wget/curl | sh - downloads and executes remote script",   "HIGH"),
-    (r'\beval\s+',               "eval - executes string as shell command, injection risk",         "HIGH"),
+    (r'(wget|curl)[^\n]*\|\s*(ba)?sh', "wget/curl | sh - downloads and executes remote script",                      "HIGH"),
+    (r'base64[^\n]*\|\s*(ba)?sh',      "base64 | sh - base64-obfuscated payload executed via shell",                 "HIGH"),
+    (r'\beval\s+',                     "eval - executes string as shell command, injection risk",                    "HIGH"),
+    (r'\bnc\b.*-e\s+',                 "nc -e - netcat reverse shell, common attack payload",                        "HIGH"),
+
+    # --- Persistence ---
+    (r'\bnohup\s+',                    "nohup - detaches process from terminal, used for persistent backdoors",       "MEDIUM"),
 ]
 
 MARKDOWN_PATTERNS: List[Tuple[str, str, str]] = [
-    (r'rm\s+-rf',                "rm -rf pattern found in SKILL.md instructions",                  "MEDIUM"),
-    (r'\bsudo\s+',               "sudo command found in SKILL.md instructions",                    "MEDIUM"),
-    (r'chmod\s+777',             "chmod 777 found in SKILL.md instructions",                       "MEDIUM"),
-    (r'(wget|curl)[^\n]*\|\s*(ba)?sh', "wget/curl | sh pattern in SKILL.md instructions",         "HIGH"),
-    (r'\beval\s+',               "eval pattern found in SKILL.md instructions",                    "MEDIUM"),
+    (r'rm\s+-rf',                      "rm -rf pattern found in SKILL.md instructions",                              "MEDIUM"),
+    (r'\bsudo\s+',                     "sudo command found in SKILL.md instructions",                                "MEDIUM"),
+    (r'\bchmod\s+777',                 "chmod 777 found in SKILL.md instructions",                                   "MEDIUM"),
+    (r'(wget|curl)[^\n]*\|\s*(ba)?sh', "wget/curl | sh pattern in SKILL.md instructions",                           "HIGH"),
+    (r'\beval\s+',                     "eval pattern found in SKILL.md instructions",                                "MEDIUM"),
+    (r'base64[^\n]*\|\s*(ba)?sh',      "base64 | sh pattern found in SKILL.md instructions",                        "HIGH"),
+    (r'-----BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE KEY-----',
+                                       "Private key material found in SKILL.md",                                     "HIGH"),
 ]
 
 
@@ -179,7 +226,7 @@ def audit_skill(skill_path: str) -> None:
                 elif ext == ".sh":
                     findings = scan_content(code, SHELL_PATTERNS, rel_path)
                 else:
-                    # JS: reuse Python exec/eval patterns as a basic check
+                    # JS: basic check for eval/exec-like patterns
                     js_patterns = [p for p in PYTHON_PATTERNS if "eval" in p[0] or "exec" in p[0]]
                     findings = scan_content(code, js_patterns, rel_path)
 
