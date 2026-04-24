@@ -8,10 +8,12 @@
 
 当 AI 智能体使用第三方的 Skill 时，存在执行恶意或破坏性代码的潜在风险。`is-skill-safe` 提供了一个静态分析工具和评估工作流，帮助智能体在使用前自动审查目标 Skill 的 `SKILL.md` 文件及其关联脚本。
 
-它会扫描常见的风险模式，例如：
-- 破坏性的 Shell 命令（如 `rm -rf`、`sudo`、`chmod 777`）
-- 潜在危险的 Python 操作（如 `os.system`、`eval`、`exec`、`subprocess`）
-- 不安全的文件写入操作和 HTTP 请求
+它会扫描 59 种常见的风险模式，涵盖多个类别：
+- 破坏性的 Shell 命令（如 `rm -rf`、`sudo`、`chmod +s`）
+- 代码执行注入（如 `eval`、`exec`、`__import__`）
+- 系统命令执行（如 `os.system`、`subprocess`）
+- 不安全的反序列化和 XML 解析
+- 硬编码凭证和路径遍历风险
 
 ## 使用方法
 
@@ -25,28 +27,48 @@
 python scripts/audit_skill.py <目标_skill_目录路径>
 ```
 
+### 白名单放行机制（误报豁免）
+
+如果脚本将安全的代码标记为风险，你可以使用三种机制来豁免这些发现。被豁免的条目会在摘要中计数，以保留审计痕迹。
+
+1. **行内豁免**：在源代码特定行的末尾添加 `# nosec` 或 `# audit: ignore` 注释。
+2. **Skill 级配置文件**：在目标 Skill 的根目录下创建一个 `.audit_ignore` 文件。每行添加一个正则表达式，用于全局忽略匹配该描述的发现（例如 `open\(`）。
+3. **CLI 参数**：在运行脚本时传递 `--allow <pattern>` 参数，以临时豁免匹配的发现：
+   ```bash
+   python scripts/audit_skill.py ./target-skill --allow "random\.\*"
+   ```
+
 ### 示例输出
 
 ```text
 Auditing skill at: /path/to/example-skill
 
---- SKILL.md Analysis ---
-Frontmatter found.
-Name: example-skill
-Description: An example skill.
-No obvious risky patterns found in SKILL.md.
+============================================================
+SKILL.md
+============================================================
+  Name       : example-skill
+  Description: An example skill.
+  No risky patterns found in SKILL.md.
 
---- Scripts Analysis ---
+============================================================
+Script: scripts/run.py
+============================================================
+  Found 2 potential risk(s):
+  [HIGH] Line 12: subprocess.run() - runs subprocess (risky if shell=True)
+         > subprocess.run(cmd, shell=True)
+  [MEDIUM] Line 45: open(..., 'w'/'a') - writes or appends to file
+         > with open("output.txt", "w") as f:
 
-Analyzing script: scripts/run.py
-Potential Risks:
-- subprocess.run call
-- File write operation
+============================================================
+SUMMARY
+============================================================
+  Total findings   : 2
+  HIGH             : 1
+  MEDIUM           : 1
+  LOW              : 0
+  Suppressed       : 1  (via allowlist / inline markers)
 
---- Summary ---
-Please review the findings above to determine if the skill is safe to use.
-Note: This is a static analysis tool and may not catch all potential security issues.
-Always manually review complex or obfuscated code.
+  HIGH severity findings require careful manual review before use.
 ```
 
 ## 目录结构
