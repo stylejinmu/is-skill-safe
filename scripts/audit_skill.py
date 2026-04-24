@@ -6,13 +6,38 @@ and associated scripts (Python, Shell, JavaScript).
 
 Usage:
     python audit_skill.py <path_to_skill_directory>
+
+Allowlist (whitelist) mechanism
+--------------------------------
+Three levels of suppression are supported:
+
+1. Inline suppression (per-line):
+   Add a comment at the end of any line to suppress all findings on that line:
+       some_code()  # nosec
+       some_code()  # audit: ignore
+
+2. Per-file allowlist via .audit_ignore file:
+   Place a file named `.audit_ignore` in the skill root directory.
+   Each non-empty, non-comment line is a regex pattern matched against
+   the finding description. Matching findings are suppressed globally.
+
+   Example .audit_ignore:
+       # Allow random module (used for non-security purposes only)
+       random\\.\\*
+       # Allow open() writes (skill only writes to its own output dir)
+       open\\(.*'w'
+
+3. Command-line allowlist:
+   Pass --allow <pattern> one or more times to suppress matching findings:
+       python audit_skill.py ./my-skill --allow "random\\.\\*" --allow "open\\("
 """
 
 import os
 import sys
 import re
-from dataclasses import dataclass
-from typing import List, Tuple
+import argparse
+from dataclasses import dataclass, field
+from typing import List, Tuple, Set
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +156,9 @@ MARKDOWN_PATTERNS: List[Tuple[str, str, str]] = [
                                        "Private key material found in SKILL.md",                                     "HIGH"),
 ]
 
+# Inline suppression markers — any line containing one of these is skipped
+INLINE_SUPPRESS_MARKERS = ("# nosec", "# audit: ignore")
+
 
 # ---------------------------------------------------------------------------
 
@@ -143,12 +171,55 @@ class Finding:
     snippet: str = ""
 
 
-def scan_content(content: str, patterns: List[Tuple[str, str, str]], location: str) -> List[Finding]:
+def load_audit_ignore(skill_path: str) -> List[str]:
+    """Load per-file allowlist patterns from <skill_root>/.audit_ignore."""
+    ignore_path = os.path.join(skill_path, ".audit_ignore")
+    patterns: List[str] = []
+    if not os.path.exists(ignore_path):
+        return patterns
+    with open(ignore_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                patterns.append(line)
+    return patterns
+
+
+def is_allowed(description: str, allowlist: List[str]) -> bool:
+    """Return True if the finding description matches any allowlist pattern."""
+    for pattern in allowlist:
+        try:
+            if re.search(pattern, description):
+                return True
+        except re.error:
+            pass
+    return False
+
+
+def scan_content(
+    content: str,
+    patterns: List[Tuple[str, str, str]],
+    location: str,
+    allowlist: List[str],
+) -> Tuple[List[Finding], int]:
+    """
+    Scan content for dangerous patterns.
+    Returns (findings, suppressed_count).
+    """
     findings: List[Finding] = []
+    suppressed = 0
     lines = content.splitlines()
     for pattern, description, severity in patterns:
         for i, line in enumerate(lines, start=1):
             if re.search(pattern, line):
+                # 1. Inline suppression
+                if any(marker in line for marker in INLINE_SUPPRESS_MARKERS):
+                    suppressed += 1
+                    continue
+                # 2. Allowlist suppression
+                if is_allowed(description, allowlist):
+                    suppressed += 1
+                    continue
                 findings.append(Finding(
                     location=location,
                     description=description,
@@ -156,10 +227,10 @@ def scan_content(content: str, patterns: List[Tuple[str, str, str]], location: s
                     line_no=i,
                     snippet=line.strip()[:120],
                 ))
-    return findings
+    return findings, suppressed
 
 
-def audit_skill(skill_path: str) -> None:
+def audit_skill(skill_path: str, cli_allowlist: List[str]) -> None:
     if not os.path.exists(skill_path):
         print(f"Error: Skill path '{skill_path}' does not exist.")
         sys.exit(1)
@@ -169,8 +240,20 @@ def audit_skill(skill_path: str) -> None:
         print(f"Error: SKILL.md not found in '{skill_path}'.")
         sys.exit(1)
 
+    # Merge allowlists: .audit_ignore + CLI --allow flags
+    file_allowlist = load_audit_ignore(skill_path)
+    allowlist = file_allowlist + cli_allowlist
+
+    if allowlist:
+        print(f"Allowlist active ({len(allowlist)} pattern(s)):")
+        for p in allowlist:
+            src = "(CLI)" if p in cli_allowlist else "(.audit_ignore)"
+            print(f"  {src}  {p}")
+        print()
+
     print(f"Auditing skill at: {skill_path}\n")
     all_findings: List[Finding] = []
+    total_suppressed = 0
 
     # ---- Analyze SKILL.md ----
     print("=" * 60)
@@ -189,8 +272,9 @@ def audit_skill(skill_path: str) -> None:
     else:
         print("  Warning: No YAML frontmatter found.")
 
-    md_findings = scan_content(md_content, MARKDOWN_PATTERNS, "SKILL.md")
+    md_findings, md_suppressed = scan_content(md_content, MARKDOWN_PATTERNS, "SKILL.md", allowlist)
     all_findings.extend(md_findings)
+    total_suppressed += md_suppressed
     if md_findings:
         print(f"\n  Found {len(md_findings)} potential risk(s) in SKILL.md:")
         for f in md_findings:
@@ -198,6 +282,8 @@ def audit_skill(skill_path: str) -> None:
             print(f"         > {f.snippet}")
     else:
         print("\n  No risky patterns found in SKILL.md.")
+    if md_suppressed:
+        print(f"  ({md_suppressed} finding(s) suppressed by allowlist)")
 
     # ---- Analyze Scripts ----
     scripts_dir = os.path.join(skill_path, "scripts")
@@ -222,15 +308,15 @@ def audit_skill(skill_path: str) -> None:
                     continue
 
                 if ext == ".py":
-                    findings = scan_content(code, PYTHON_PATTERNS, rel_path)
+                    findings, suppressed = scan_content(code, PYTHON_PATTERNS, rel_path, allowlist)
                 elif ext == ".sh":
-                    findings = scan_content(code, SHELL_PATTERNS, rel_path)
+                    findings, suppressed = scan_content(code, SHELL_PATTERNS, rel_path, allowlist)
                 else:
-                    # JS: basic check for eval/exec-like patterns
                     js_patterns = [p for p in PYTHON_PATTERNS if "eval" in p[0] or "exec" in p[0]]
-                    findings = scan_content(code, js_patterns, rel_path)
+                    findings, suppressed = scan_content(code, js_patterns, rel_path, allowlist)
 
                 all_findings.extend(findings)
+                total_suppressed += suppressed
                 if findings:
                     print(f"  Found {len(findings)} potential risk(s):")
                     for f in findings:
@@ -238,6 +324,8 @@ def audit_skill(skill_path: str) -> None:
                         print(f"         > {f.snippet}")
                 else:
                     print("  No risky patterns found.")
+                if suppressed:
+                    print(f"  ({suppressed} finding(s) suppressed by allowlist)")
     else:
         print("\nNo scripts/ directory found.")
 
@@ -248,10 +336,12 @@ def audit_skill(skill_path: str) -> None:
     high   = [f for f in all_findings if f.severity == "HIGH"]
     medium = [f for f in all_findings if f.severity == "MEDIUM"]
     low    = [f for f in all_findings if f.severity == "LOW"]
-    print(f"  Total findings : {len(all_findings)}")
-    print(f"  HIGH           : {len(high)}")
-    print(f"  MEDIUM         : {len(medium)}")
-    print(f"  LOW            : {len(low)}")
+    print(f"  Total findings   : {len(all_findings)}")
+    print(f"  HIGH             : {len(high)}")
+    print(f"  MEDIUM           : {len(medium)}")
+    print(f"  LOW              : {len(low)}")
+    if total_suppressed:
+        print(f"  Suppressed       : {total_suppressed}  (via allowlist / inline markers)")
 
     if high:
         print("\n  HIGH severity findings require careful manual review before use.")
@@ -262,10 +352,42 @@ def audit_skill(skill_path: str) -> None:
 
     print("\nNote: This is static analysis only. Always manually review")
     print("      complex or obfuscated code before trusting a skill.")
+    if not allowlist:
+        print("\nTip:  To suppress false positives, add '# nosec' to a line, use")
+        print("      --allow <pattern> on the CLI, or create a .audit_ignore file.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Static security analysis for AI agent Skills.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Allowlist examples:
+  # Suppress a specific rule globally via CLI:
+  python audit_skill.py ./my-skill --allow "random\\.\\*"
+
+  # Suppress multiple rules:
+  python audit_skill.py ./my-skill --allow "open\\(" --allow "hashlib\\.md5"
+
+  # Suppress a line inline (in the source file):
+  some_code()  # nosec
+  some_code()  # audit: ignore
+
+  # Suppress rules via .audit_ignore file in the skill root:
+  echo "random\\.\\*" >> .audit_ignore
+        """,
+    )
+    parser.add_argument("skill_path", help="Path to the skill directory to audit")
+    parser.add_argument(
+        "--allow",
+        metavar="PATTERN",
+        action="append",
+        default=[],
+        help="Regex pattern matched against finding descriptions to suppress (repeatable)",
+    )
+    args = parser.parse_args()
+    audit_skill(args.skill_path, args.allow)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python audit_skill.py <path_to_skill_directory>")
-        sys.exit(1)
-    audit_skill(sys.argv[1])
+    main()
