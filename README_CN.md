@@ -29,14 +29,45 @@ python scripts/audit_skill.py <目标_skill_目录路径>
 
 ### 白名单放行机制（误报豁免）
 
-如果脚本将安全的代码标记为风险，你可以使用三种机制来豁免这些发现。被豁免的条目会在摘要中计数，以保留审计痕迹。
+如果脚本将安全的代码标记为风险，你可以使用三种机制来豁免这些发现。
 
-1. **行内豁免**：在源代码特定行的末尾添加 `# nosec` 或 `# audit: ignore` 注释。
-2. **Skill 级配置文件**：在目标 Skill 的根目录下创建一个 `.audit_ignore` 文件。每行添加一个正则表达式，用于全局忽略匹配该描述的发现（例如 `open\(`）。
-3. **CLI 参数**：在运行脚本时传递 `--allow <pattern>` 参数，以临时豁免匹配的发现：
-   ```bash
-   python scripts/audit_skill.py ./target-skill --allow "random\.\*"
-   ```
+#### 1. 行内豁免
+在源代码特定行的末尾添加 `# nosec` 或 `# audit: ignore` 注释。这适用于豁免单个特定的代码行。
+
+#### 2. `.audit_ignore` 文件
+在目标 Skill 的根目录下创建一个 `.audit_ignore` 文件。每行应包含一个**正则表达式**，用于全局忽略匹配该描述的发现。
+
+**示例：**
+如果脚本输出：
+`[MEDIUM] Line 12: open(..., 'w'/'a') - writes or appends to file`
+`[LOW] Line 34: random.* - not cryptographically secure`
+
+并且你确认这些在你的 Skill 中是安全的，你的 `.audit_ignore` 文件可以这样写：
+```text
+# 允许 open() 写入操作 — 该 Skill 仅写入其自身的输出目录
+open\(
+
+# 允许 random 模块 — 仅用于非安全相关的随机打乱
+not cryptographically secure
+```
+*注意：正则表达式中的特殊字符（如 `(`）必须使用反斜杠 `\` 进行转义。*
+
+#### 3. CLI `--allow` 参数
+在运行脚本时传递 `--allow <pattern>` 参数，以临时豁免匹配的发现。
+
+**使用场景：** 当你正在审查他人的 Skill，并且希望在不修改其文件的情况下临时忽略已知安全的模式时，此方法非常理想。
+
+**示例：**
+```bash
+python scripts/audit_skill.py ./target-skill \
+  --allow "open\(" \
+  --allow "not cryptographically secure"
+```
+
+#### “Suppressed: N” 是什么意思？
+被豁免的发现并不会完全消失。相反，它们会被计数，并在 `SUMMARY` 部分显示为 `Suppressed: N`。
+
+这确保了审计痕迹的透明度。如果一份报告显示零风险，但 `Suppressed` 计数很高，这表明许多规则被手动绕过了，需要进一步调查。这可以防止白名单被用来在虚假的安全感下隐藏恶意代码。
 
 ### 示例输出
 

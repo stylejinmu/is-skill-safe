@@ -29,14 +29,45 @@ python scripts/audit_skill.py <path_to_target_skill_directory>
 
 ### Allowlist (False Positive Suppression)
 
-If the script flags safe code as risky, you can suppress these findings using three mechanisms. Suppressed findings are counted in the summary to maintain an audit trail.
+If the script flags safe code as risky, you can suppress these findings using three mechanisms. 
 
-1. **Inline Suppression**: Append `# nosec` or `# audit: ignore` to the end of the specific line in the source code.
-2. **Per-Skill File**: Create a `.audit_ignore` file in the target skill's root directory. Add regex patterns (one per line) matching the finding descriptions you want to ignore globally for that skill (e.g., `open\(`).
-3. **CLI Flag**: Pass `--allow <pattern>` when running the script to suppress findings on the fly:
-   ```bash
-   python scripts/audit_skill.py ./target-skill --allow "random\.\*"
-   ```
+#### 1. Inline Suppression
+Append `# nosec` or `# audit: ignore` to the end of the specific line in the source code. This is useful for suppressing a single, specific line.
+
+#### 2. `.audit_ignore` File
+Create a `.audit_ignore` file in the target skill's root directory. Each line should be a **regular expression** that matches the finding description you want to ignore globally for that skill.
+
+**Example:**
+If the script outputs:
+`[MEDIUM] Line 12: open(..., 'w'/'a') - writes or appends to file`
+`[LOW] Line 34: random.* - not cryptographically secure`
+
+And you know these are safe in your skill, your `.audit_ignore` would look like:
+```text
+# Allow open() writes — skill only writes to its own output directory
+open\(
+
+# Allow random module — used for non-security shuffle only
+not cryptographically secure
+```
+*Note: Special regex characters like `(` must be escaped with a backslash `\`.*
+
+#### 3. CLI `--allow` Flag
+Pass `--allow <pattern>` when running the script to suppress findings on the fly. 
+
+**When to use:** This is ideal when you are auditing someone else's skill and want to temporarily ignore known-safe patterns without modifying their files.
+
+**Example:**
+```bash
+python scripts/audit_skill.py ./target-skill \
+  --allow "open\(" \
+  --allow "not cryptographically secure"
+```
+
+#### What does "Suppressed: N" mean?
+Suppressed findings do not disappear completely. Instead, they are counted and displayed in the `SUMMARY` section as `Suppressed: N`. 
+
+This ensures the audit trail remains transparent. If a report shows zero risks but has a high `Suppressed` count, it indicates that many rules were manually bypassed, which warrants further investigation. It prevents the allowlist from being used to hide malicious code under a false sense of security.
 
 ### Example Output
 
