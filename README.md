@@ -1,5 +1,7 @@
 # Is Skill Safe
 
+English | [简体中文](README_CN.md)
+
 A security auditing skill designed for AI agents to analyze and evaluate the safety of other skills.
 
 ## Overview
