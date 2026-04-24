@@ -1,6 +1,6 @@
 # Is Skill Safe
 
-A security auditing skill designed for AI agents (like Manus) to analyze and evaluate the safety of other skills.
+A security auditing skill designed for AI agents to analyze and evaluate the safety of other skills.
 
 ## Overview
 
